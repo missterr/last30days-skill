@@ -141,7 +141,7 @@ LAST30DAYS_PUBLISH_PASSWORD="${PUBLISH_PASSWORD:-}" \
   >/dev/null
 ```
 
-The hosted URL appears on stderr as `[last30days] Published HTML to https://...`. Confirm the result with the hosted URL. If the user chose password protection, also repeat the shared password they selected so they can send the URL and password together. The engine writes URL metadata to `<HTML_PATH>.publish.json`. The provider may return an `update_key`; treat it as secret. The engine deliberately does not write the update key to stdout, the HTML artifact, or `.publish.json` companion metadata.
+The hosted URL appears on stderr as `[last30days] Published HTML to https://...`. Confirm the result with the hosted URL. If the user chose password protection, say the page is password-protected and remind them to send the password through a separate channel from the link. Do not repeat the password in chat. The engine writes URL metadata to `<HTML_PATH>.publish.json`. The provider may return an `update_key`; treat it as secret. The engine deliberately does not write the update key to stdout, the HTML artifact, or `.publish.json` companion metadata.
 
 ## Chat handoff after saving
 
@@ -192,7 +192,7 @@ The engine's `--emit=html` renderer combines:
 - The engine footer (`✅ All agents reported back!` tree) preserved verbatim in monospace
 - A colophon with the topic and a re-run hint
 
-The renderer strips engine-internal noise that doesn't belong in a shareable artifact: the `# last30days vX.Y.Z: TOPIC` debug file header, the model-facing `> Safety note:` blockquote, and the `I'm now an expert on X` invitation block. Data quality warnings (degraded run, thin evidence, etc.) stay in the engine's stderr logs - they never leak into the share-ready file.
+The renderer strips engine-internal noise that doesn't belong in a shareable artifact: the `# last30days vX.Y.Z: TOPIC` debug file header, the model-facing `> Safety note:` blockquote, and the `I'm now an expert on X` invitation block. When coverage was degraded (failed sources, thin or stale evidence, skipped topic resolution), the engine adds a one-line `Data quality note` near the top of the file so recipients do not read the brief as complete coverage. The same warnings print to stderr as `[last30days] data quality: ...` lines.
 
 ## Comparison mode
 
@@ -212,7 +212,7 @@ The engine reuses `~/.config/last30days/last-report.json` when it is still withi
 - Do NOT add content to the temp file beyond your synthesis prose. The badge / footer / colophon come from the engine.
 - Do NOT change the file path convention. `${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html` is the canonical location.
 - Do NOT overwrite an existing file. Step 2 renders to a private temporary file and links the completed output to a new name. If `{slug}-brief.html` exists, try `{slug}-brief-YYYY-MM-DD.html`, then `{slug}-brief-YYYY-MM-DD-2.html`, incrementing until a name is available. This also handles concurrent exporters without replacing files, directories, or symlinks. The temporary file is removed on success or failure. If rendering or linking fails, report the error instead of a successful save. Always report the path stored in `HTML_PATH` in the chat handoff.
-- Do NOT include the data quality warning text in the temp file or in your final chat line. Warnings are an engine-stderr concern, not an artifact concern.
+- Do NOT copy data quality warnings into the temp file; the engine renders its own note into the artifact. Do NOT drop or soften them either: when stderr shows `[last30days] data quality:` lines, mention the degraded coverage in one short line of the chat handoff, before the next-step choices.
 - Do NOT publish, upload, or send the HTML to a third-party service as part of the local save flow.
 - Do NOT publish to any service merely because HTML was requested. Show the saved path and next-step choices first; publishing requires the user to choose a publish option.
 - Do NOT block a local HTML export on a hosting decision unless the user explicitly asked for a hosted URL.

@@ -39,7 +39,7 @@ This copies the skill to `~/.hermes/skills/research/last30days`. With named prof
 
 ### What runs on your machine
 
-- **Setup installs one thing:** `yt-dlp` through Homebrew, on macOS, when it's missing. Setup never runs `npx`/`npm`, `curl | sh`, `git clone`, or `go install`, and never downloads or builds third-party CLIs. `tests/test_no_runtime_installs.py` enforces this.
+- **Setup installs one thing:** `yt-dlp` through Homebrew, on macOS, when it's missing. On other platforms setup only detects it. For a strict detect-only policy on macOS too, set `LAST30DAYS_SETUP_NO_INSTALL=1` in your environment or `~/.config/last30days/.env` before first run; setup then reports yt-dlp as missing and installs nothing. Setup never runs `npx`/`npm`, `curl | sh`, `git clone`, or `go install`, and never downloads or builds third-party CLIs. `tests/test_no_runtime_installs.py` enforces this.
 - **Built in, no install needed:** Reddit, Hacker News, Polymarket, GitHub, arXiv, Techmeme, and web search.
 - **Optional external binaries.** The skill runs these only if you installed them yourself and they're on `PATH`: `yt-dlp` (YouTube), `node` (runs the vendored, search-only X client; it reads credentials from its environment only), `digg-pp-cli` (Digg), `gh`, `grok`, `xurl`, `brightdata`.
 - **Digg CLI (optional):** build it from a pinned, reviewed source commit with `bash ~/.hermes/skills/research/last30days/scripts/build-pp-cli.sh digg`. This needs Go and writes to `$HOME/.local/bin`. Your Hermes gateway's `PATH` must include that directory, or Digg stays off.
@@ -74,7 +74,7 @@ On first run, the skill walks you through setup:
 
 1. **Auto setup** (~30 seconds)
    - Reads browser cookies for X/Twitter, only if you consent
-   - Checks for yt-dlp and installs it with Homebrew if it's missing
+   - Checks for yt-dlp and, on macOS, installs it with Homebrew if it's missing (skipped when `LAST30DAYS_SETUP_NO_INSTALL=1`)
    - Detects `digg-pp-cli` and never installs it. If it's missing, setup prints the `build-pp-cli.sh digg` command for you to run yourself.
    - Configures the free sources (Reddit, HN, Polymarket, arXiv, Techmeme)
 

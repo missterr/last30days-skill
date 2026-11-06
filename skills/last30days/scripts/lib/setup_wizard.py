@@ -69,14 +69,27 @@ def render_welcome() -> str:
 OFFICIAL_HOST_COOKIE_NOTE = "browser sessions are not read on this host"
 
 
+def _ytdlp_auto_install_allowed(config: Dict[str, Any]) -> bool:
+    """Whether setup may run `brew install yt-dlp` on its own.
+
+    Only on macOS (the platform the docs promise) and only when the user has
+    not opted into detect-only setup with ``LAST30DAYS_SETUP_NO_INSTALL``.
+    """
+    if sys.platform != "darwin":
+        return False
+    flag = os.environ.get("LAST30DAYS_SETUP_NO_INSTALL") or config.get("LAST30DAYS_SETUP_NO_INSTALL") or ""
+    return str(flag).strip().lower() not in {"1", "true", "yes", "on"}
+
+
 def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = False) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
     - Optionally runs cookie extraction for all registered domains, trying the
       browsers from ``env.cookie_extraction_browsers()``. Browser reads are off
       unless ``allow_browser_cookies`` is true.
-    - Checks if yt-dlp is installed (installs it with Homebrew when missing:
-      a well-known package from a standard package manager)
+    - Checks if yt-dlp is installed. On macOS it installs it with Homebrew when
+      missing (a well-known package from a standard package manager), unless
+      ``LAST30DAYS_SETUP_NO_INSTALL`` is set; elsewhere it only detects.
     - Detects digg-pp-cli. Never downloads, builds, or runs third-party
       installers for it: when missing, the summary prints the pinned build
       script for the user to run themselves.
@@ -91,7 +104,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
           cookie_note: present only on an official-only host, where the scan
               is skipped for every domain (neutral, relayable text)
           ytdlp_installed: bool
-          ytdlp_action: already_installed | installed | install_failed | no_homebrew
+          ytdlp_action: already_installed | installed | install_failed | no_homebrew | no_pip_windows | detect_only
           digg_installed: bool (True when the engine can resolve digg-pp-cli on PATH)
           digg_action: already_installed | installed_off_path | not_installed
           env_written: bool (always False here — caller writes config separately)
@@ -157,6 +170,9 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
     elif os.name == "nt":
         ytdlp_installed = False
         ytdlp_action = "no_pip_windows"
+    elif not _ytdlp_auto_install_allowed(config):
+        ytdlp_installed = False
+        ytdlp_action = "detect_only"
     elif shutil.which("brew") is not None:
         brew_stderr = ""
         try:
@@ -727,6 +743,11 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
         lines.append("  - yt-dlp install failed \u2014 run `brew install yt-dlp` manually")
     elif ytdlp_action == "no_homebrew":
         lines.append("  - yt-dlp not found. Install Homebrew first, then: brew install yt-dlp")
+    elif ytdlp_action == "detect_only":
+        lines.append(
+            "  - yt-dlp not found. Setup did not install it (detect-only). "
+            "Install it yourself for YouTube search, e.g. `brew install yt-dlp` or `pip install yt-dlp`"
+        )
     elif ytdlp_action == "no_pip_windows":
         lines.append(
             "  - yt-dlp not found. Install with: pip install yt-dlp "

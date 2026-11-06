@@ -728,6 +728,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('BROWSER_CDP_URL', None),
         ('LAST30DAYS_TRUST_PROJECT_CONFIG', None),
         ('SETUP_COMPLETE', None),
+        # Detect-only setup: never run `brew install yt-dlp` (setup_wizard).
+        ('LAST30DAYS_SETUP_NO_INSTALL', None),
         ('INCLUDE_SOURCES', ''),
         ('EXCLUDE_SOURCES', ''),
         ('LAST30DAYS_DEFAULT_SEARCH', ''),

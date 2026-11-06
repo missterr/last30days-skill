@@ -506,6 +506,7 @@ def emit_output(
         )
         return json.dumps(payload, indent=2, sort_keys=True)
     if emit == "html":
+        _log_html_warnings(render.collect_html_warnings(report))
         return html_render.render_html(
             report,
             fun_level=fun_level,
@@ -525,6 +526,12 @@ def emit_output(
     if emit == "brief":
         return render.render_brief(report)
     raise SystemExit(f"Unsupported emit mode: {emit}")
+
+
+def _log_html_warnings(warnings: list[str]) -> None:
+    """Surface degraded coverage to the generator; the artifact carries a note too."""
+    for warning in warnings:
+        sys.stderr.write(f"[last30days] data quality: {warning}\n")
 
 
 def emit_comparison_output(
@@ -555,6 +562,7 @@ def emit_comparison_output(
             payload["schema_version"] = schema.AGENT_EXPORT_SCHEMA_VERSION
         return json.dumps(payload, indent=2, sort_keys=True)
     if emit == "html":
+        _log_html_warnings(render.collect_html_warnings_comparison(entity_reports))
         return html_render.render_html_comparison(
             entity_reports,
             fun_level=fun_level,

@@ -36,6 +36,24 @@ class _PosixOs:
         return getattr(os, attr)
 
 
+class _PlatformSys:
+    """Delegates to the real sys module but reports a fixed ``platform``."""
+
+    def __init__(self, platform):
+        self.platform = platform
+
+    def __getattr__(self, attr):
+        return getattr(sys, attr)
+
+
+@pytest.fixture(autouse=True)
+def _macos_install_policy(monkeypatch):
+    """Pin the yt-dlp install gate to macOS with no opt-out, so Homebrew-path
+    tests behave the same on Linux and Windows CI runners."""
+    monkeypatch.setattr(setup_wizard, "sys", _PlatformSys("darwin"))
+    monkeypatch.delenv("LAST30DAYS_SETUP_NO_INSTALL", raising=False)
+
+
 class TestIsFirstRun:
     """Tests for is_first_run()."""
 
@@ -367,6 +385,42 @@ class TestYtdlpAutoInstall:
         assert results["ytdlp_installed"] is False
         assert results["ytdlp_action"] == "install_failed"
         assert "something broke" in results["ytdlp_stderr"]
+
+
+    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
+    @patch("shutil.which")
+    def test_linux_with_brew_is_detect_only(self, mock_which, mock_extract, monkeypatch):
+        """Linuxbrew present -> no install; the gate is macOS, not `brew` on PATH."""
+        monkeypatch.setattr(setup_wizard, "os", _PosixOs())
+        monkeypatch.setattr(setup_wizard, "sys", _PlatformSys("linux"))
+        mock_which.side_effect = lambda cmd: "/home/linuxbrew/.linuxbrew/bin/brew" if cmd == "brew" else None
+
+        with patch("subprocess.run") as mock_subproc:
+            results = setup_wizard.run_auto_setup({})
+            mock_subproc.assert_not_called()
+
+        assert results["ytdlp_installed"] is False
+        assert results["ytdlp_action"] == "detect_only"
+        assert "did not install" in setup_wizard.get_setup_status_text(results)
+
+    @pytest.mark.parametrize("source", ["env", "config"])
+    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
+    @patch("shutil.which")
+    def test_no_install_opt_out(self, mock_which, mock_extract, source, monkeypatch):
+        """LAST30DAYS_SETUP_NO_INSTALL makes macOS setup detect-only too."""
+        monkeypatch.setattr(setup_wizard, "os", _PosixOs())
+        mock_which.side_effect = lambda cmd: "/opt/homebrew/bin/brew" if cmd == "brew" else None
+        config = {}
+        if source == "env":
+            monkeypatch.setenv("LAST30DAYS_SETUP_NO_INSTALL", "1")
+        else:
+            config["LAST30DAYS_SETUP_NO_INSTALL"] = "true"
+
+        with patch("subprocess.run") as mock_subproc:
+            results = setup_wizard.run_auto_setup(config)
+            mock_subproc.assert_not_called()
+
+        assert results["ytdlp_action"] == "detect_only"
 
 
 class TestDiggAutoInstall:

@@ -221,7 +221,7 @@ If one regeneration still cannot satisfy a data-backed check, display the best s
 
 HTML/export intent includes `--emit=html`, `--emit:html`, `--html`, or a natural-language request for an HTML brief, shareable document, or file for sharing. These are skill intent signals, not the full Python CLI contract. If triggered, read the HTML reference through the root gate before finishing. Otherwise skip that read and save flow.
 
-Follow the HTML reference exactly: local file first, absolute path, open locally when supported and implied, and its concise handoff for an HTML deliverable. Never re-research merely to render cached findings. Never upload/publish without an explicit hosted-sharing request and disclosure that the link may be public/indexed unless protected. Never add debug/data-quality warnings to a shareable artifact or improvise a save path.
+Follow the HTML reference exactly: local file first, absolute path, open locally when supported and implied, and its concise handoff for an HTML deliverable. Never re-research merely to render cached findings. Never upload/publish without an explicit hosted-sharing request and disclosure that the link may be public/indexed unless protected. Never add your own debug text to a shareable artifact, never hide or soften the engine's data quality note, and never improvise a save path.
 
 After the response and required citations, stop and wait unless governing instructions require continuation. Resume any deferred same-run onboarding first. Do not continue research after the invitation. Claim a saved artifact only when the engine emitted a path; an empty save directory disables saving and its pointer.
 

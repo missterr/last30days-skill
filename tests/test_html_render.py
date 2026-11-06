@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from html.parser import HTMLParser
 from pathlib import Path
 
 import last30days as cli
-from lib import html_render, schema
+from lib import html_render, render, schema
 
 
 def _report(topic: str, cluster_titles: list[str]) -> schema.Report:
@@ -342,26 +343,38 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertLess(metadata_index, synthesis_index)
         self.assertLess(synthesis_index, footer_index)
 
-    def test_warnings_excluded_from_html_artifact(self):
-        """Data quality warnings must NOT appear in the shareable HTML.
+    def test_degraded_coverage_is_disclosed_in_html_artifact(self):
+        """A shared brief must not read as complete coverage.
 
-        Recipients of a shared HTML brief don't have context to act on
-        warnings about pre-flight resolution / engine state. The HTML is the
-        artifact; warnings stay in the engine's stderr logs where the
-        generator (not the recipient) sees them.
+        Recipients of a forwarded HTML file never see the generator's stderr,
+        so degraded runs carry a one-line data quality note in the artifact.
+        Engine-internal headings and remediation flags stay out.
         """
         report = _report("OpenClaw", ["Containers"])
         report.artifacts["pre_research_flags_present"] = False
         report.artifacts["plan_source"] = "deterministic"
-        report.warnings.append("Brave quota exhausted")
+        report.warnings.append("Some sources failed: x, youtube")
         rendered = html_render.render_html(report)
-        # Warning text variations must all be absent from the artifact.
-        self.assertNotIn("Data quality note", rendered)
-        self.assertNotIn("Brave quota exhausted", rendered)
+        self.assertIn("Data quality note", rendered)
+        self.assertIn("Some sources failed: x, youtube", rendered)
+        self.assertNotIn("--plan", rendered)
         self.assertNotIn("DEGRADED RUN WARNING", rendered)
         self.assertNotIn("Pre-Research Status", rendered)
-        # No blockquote at all in mock output - just badge + meta + footer + colophon
-        self.assertEqual(0, rendered.count("<blockquote>"))
+        self.assertEqual(1, rendered.count("<blockquote>"))
+
+    def test_clean_run_has_no_data_quality_note(self):
+        with patch.object(render, "_assess_data_freshness", return_value=None):
+            rendered = html_render.render_html(_report("OpenClaw", ["Containers"]))
+        self.assertNotIn("Data quality note", rendered)
+
+    def test_comparison_discloses_degraded_entity(self):
+        clean = _report("Alpha", ["One"])
+        degraded = _report("Beta", ["Two"])
+        degraded.warnings.append("Evidence is thin for this topic.")
+        rendered = html_render.render_html_comparison([("Alpha", clean), ("Beta", degraded)])
+        self.assertIn("Data quality note", rendered)
+        self.assertIn("Evidence is thin for this topic.", rendered)
+        self.assertLess(rendered.index("Beta:"), rendered.index("Evidence is thin"))
 
 
 class HtmlCliIntegrationTests(unittest.TestCase):
