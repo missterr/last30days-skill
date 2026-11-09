@@ -947,8 +947,8 @@ def render_for_html(
 ) -> str:
     """Render markdown intended for shareable HTML conversion.
 
-    This output keeps the public badge, compact source/date metadata, an
-    optional one-line data quality note, optional synthesized brief markdown,
+    This output keeps the public badge, compact source/date metadata, a
+    one-line data quality note whenever coverage was degraded, optional synthesized brief markdown,
     and the engine footer. It deliberately omits the debug file header,
     model-facing safety note, and evidence scratchpad emitted by
     render_compact().
@@ -967,6 +967,9 @@ def render_for_html(
     drill_context = _render_drill_context(report)
     if drill_context:
         lines.extend(["", *drill_context])
+    quality_note = _render_html_data_quality_note(report)
+    if quality_note:
+        lines.extend(["", quality_note])
     html_clusters = _clusters_clearing_relevance_floor(
         evidence_report,
         evidence_report.clusters,
@@ -1006,11 +1009,9 @@ def render_for_html(
     freshness_verdicts = _render_freshness_verdicts(report)
     if freshness_verdicts:
         lines.extend(["", *freshness_verdicts])
-    # Data quality warnings are NOT rendered into the HTML artifact. The HTML
-    # is meant to be shared (Slack, email, Notion); recipients haven't asked
-    # for technical commentary about how the run was produced. Generators see
-    # the same warnings via collect_html_warnings() routed to stderr by the
-    # CLI, so they can fix quality issues before sharing.
+    # The data quality note above is deliberate: a shared brief must not read
+    # as complete coverage when sources failed or evidence was thin. Readers
+    # of a forwarded file never see the generator's stderr.
     _append_html_footer(lines, report, save_path)
     return "\n".join(lines).strip() + "\n"
 
@@ -1039,6 +1040,9 @@ def render_for_html_comparison(
         *_render_badge(),
         meta,
     ]
+    quality_note = _render_html_comparison_data_quality_note(entity_reports)
+    if quality_note:
+        lines.extend(["", quality_note])
     if synthesis_md:
         lines.extend(["", synthesis_md.strip()])
     for label, report in entity_reports:
@@ -1048,13 +1052,15 @@ def render_for_html_comparison(
         corpus_section = _render_corpus_section(report)
         if corpus_section:
             lines.extend(["", f"## {label}", "", *corpus_section])
-    # Comparison data quality notes also go to stderr, not into the artifact.
     _append_html_footer(lines, main_report, save_path)
     return "\n".join(lines).strip() + "\n"
 
 
 def collect_html_warnings(report: schema.Report) -> list[str]:
-    """Collect data quality warnings for stderr output (NOT for the HTML artifact).
+    """Collect data quality warnings as a list for stderr / tooling output.
+
+    The HTML artifact carries the same signal as a one-line note
+    (``_render_html_data_quality_note``).
 
     Returns a list of human-readable warning strings. Empty list if the run
     was clean. Used by the CLI to emit diagnostics to stderr after writing
@@ -1110,7 +1116,7 @@ def _render_html_data_quality_note(report: schema.Report) -> str | None:
     degraded_warning = _render_degraded_run_warning(report)
     if degraded_warning:
         notes.append(
-            "This run was missing pre-flight resolution. Re-run with `--plan` for richer results."
+            "Topic resolution was skipped for this run, so coverage may be thinner than usual."
         )
     pre_research_warning = _render_pre_research_warning(report)
     if pre_research_warning and not degraded_warning:

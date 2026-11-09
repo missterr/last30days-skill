@@ -69,14 +69,30 @@ def render_welcome() -> str:
 OFFICIAL_HOST_COOKIE_NOTE = "browser sessions are not read on this host"
 
 
+def _ytdlp_auto_install_allowed(config: Dict[str, Any]) -> bool:
+    """Whether setup may run `brew install yt-dlp` on its own.
+
+    Only on macOS (the platform the docs promise) and only when the user has
+    not opted into detect-only setup with ``LAST30DAYS_SETUP_NO_INSTALL``.
+    """
+    if sys.platform != "darwin":
+        return False
+    flag = os.environ.get("LAST30DAYS_SETUP_NO_INSTALL") or config.get("LAST30DAYS_SETUP_NO_INSTALL") or ""
+    return str(flag).strip().lower() not in {"1", "true", "yes", "on"}
+
+
 def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = False) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
     - Optionally runs cookie extraction for all registered domains, trying the
       browsers from ``env.cookie_extraction_browsers()``. Browser reads are off
       unless ``allow_browser_cookies`` is true.
-    - Checks if yt-dlp is installed
-    - Best-effort install of digg-pp-cli (Printing Press library)
+    - Checks if yt-dlp is installed. On macOS it installs it with Homebrew when
+      missing (a well-known package from a standard package manager), unless
+      ``LAST30DAYS_SETUP_NO_INSTALL`` is set; elsewhere it only detects.
+    - Detects digg-pp-cli. Never downloads, builds, or runs third-party
+      installers for it: when missing, the summary prints the pinned build
+      script for the user to run themselves.
 
     Returns:
         Dict with keys:
@@ -88,12 +104,11 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
           cookie_note: present only on an official-only host, where the scan
               is skipped for every domain (neutral, relayable text)
           ytdlp_installed: bool
-          ytdlp_action: already_installed | installed | install_failed | no_homebrew
+          ytdlp_action: already_installed | installed | install_failed | no_homebrew | no_pip_windows | detect_only
           digg_installed: bool (True when the engine can resolve digg-pp-cli on PATH)
-          digg_action: already_installed | installed | installed_off_path | install_failed | no_npx
+          digg_action: already_installed | installed_off_path | not_installed
           env_written: bool (always False here — caller writes config separately)
           ytdlp_stderr: present when ytdlp_action is install_failed
-          digg_stderr: present when digg_action is install_failed
           digg_path: present when digg_action is installed_off_path (binary on disk, not on PATH)
     """
     from .env import COOKIE_DOMAINS, cookie_extraction_browsers, x_policy
@@ -106,7 +121,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
     # Official-only host (LAST30DAYS_HOST=grok-bot): the consented
     # cookie scan is skipped for EVERY domain (X and Truth Social alike) and
     # recorded as not attempted, with a neutral note the caller can relay.
-    # The free CLI installs below still run. A LAST30DAYS_X_BACKEND=bird pin
+    # The yt-dlp install and CLI detection below still run. A LAST30DAYS_X_BACKEND=bird pin
     # is the one path that re-enables discovery, via x_policy.
     if allow_browser_cookies and not x_policy(config).cookie_discovery:
         allow_browser_cookies = False
@@ -155,6 +170,9 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
     elif os.name == "nt":
         ytdlp_installed = False
         ytdlp_action = "no_pip_windows"
+    elif not _ytdlp_auto_install_allowed(config):
+        ytdlp_installed = False
+        ytdlp_action = "detect_only"
     elif shutil.which("brew") is not None:
         brew_stderr = ""
         try:
@@ -179,8 +197,8 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         ytdlp_installed = False
         ytdlp_action = "no_homebrew"
 
-    digg_installed, digg_action, digg_stderr, digg_path = _install_digg_cli()
-    pp_sources = install_default_pp_sources()
+    digg_installed, digg_action, digg_path = _detect_digg_cli()
+    pp_sources = detect_default_pp_sources()
 
     scan_attempted = allow_browser_cookies and bool(browsers)
     results: Dict[str, Any] = {
@@ -209,21 +227,28 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         results["cookie_note"] = cookie_note
     if ytdlp_action == "install_failed":
         results["ytdlp_stderr"] = brew_stderr
-    if digg_action == "install_failed":
-        results["digg_stderr"] = digg_stderr
     if digg_path:
         results["digg_path"] = digg_path
     return results
 
 
-# Generous timeout: the install shells out to `npx`, which may download the
-# Printing Press package and build the Go binary over the network.
-DIGG_INSTALL_TIMEOUT = 300
 DIGG_CLI_BIN = "digg-pp-cli"
-# Pin the catalog installer; matches printing-press-library npm 0.1.16 default
-# ($HOME/.local/bin on macOS/Linux).
-PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.16"
-DIGG_INSTALL_CMD = f"npx -y {PRINTING_PRESS_NPM} install digg --cli-only"
+
+# Printing Press CLIs are NEVER downloaded, built, or installed by the skill.
+# The only supported way to get one is ``scripts/build-pp-cli.sh <slug>``,
+# which the USER runs. It builds the CLI from source at a pinned, reviewed
+# commit of the maintainer-controlled fork (see the script header for the repo
+# and commit pin). Setup and doctor only print this command.
+
+
+def pp_build_command(slug: str) -> str:
+    """The user-run command that builds the ``<slug>-pp-cli`` from the pinned fork."""
+    from . import health
+
+    return health.pp_install_cmd(slug)
+
+
+DIGG_INSTALL_CMD = pp_build_command("digg")
 
 
 def _digg_bin_candidate_paths() -> list[Path]:
@@ -278,100 +303,31 @@ def _digg_bin_dir_hint(digg_path: str) -> str:
     return parent
 
 
-def _run_npx_install(slug: str) -> Tuple[str, str]:
-    """Resolve ``npx`` and run the Printing Press catalog install for ``slug``.
+def _detect_digg_cli() -> Tuple[bool, str, str]:
+    """Detect the digg-pp-cli binary. Never installs anything.
 
-    Shared by ``_install_digg_cli`` and ``_install_pp_cli`` -- this is only the
-    "resolve npx, run the install, interpret no_npx/exception/nonzero-rc"
-    slice; each caller keeps its own on-path/off-path re-verification
-    (``_digg_bin_candidate_paths`` vs ``_pp_bin_candidate_paths`` already use
-    different candidate-directory sources, so merging them here would change
-    off-path detection behavior beyond this fix's scope).
-
-    Fixes the Windows PATHEXT mismatch: ``shutil.which("npx")`` resolves
-    ``npx.CMD`` via PATHEXT, but ``subprocess.run`` given the bare string
-    ``"npx"`` as argv[0] does not do that resolution and fails with
-    ``WinError 2``. Passing the resolved path is a no-op on macOS/Linux, where
-    ``shutil.which`` already returns the exact path ``CreateProcess``/``execve``
-    would resolve.
-
-    Returns ``(action, stderr)``: ``action`` is ``"no_npx"``,
-    ``"install_failed"``, or ``""`` when the subprocess ran and returned
-    ``rc=0`` (in which case ``stderr`` carries any non-fatal stderr output for
-    the caller's own off-path logging).
+    Returns ``(engine_active, action, off_path_binary)``. ``engine_active`` is
+    True only when ``shutil.which`` resolves the binary (matching
+    ``pipeline.available_sources()``). ``action`` is one of:
+      already_installed | installed_off_path | not_installed
+    ``off_path_binary`` is set when the binary exists on disk but is not
+    PATH-visible to this process.
     """
-    npx = shutil.which("npx")
-    if npx is None:
-        return "no_npx", ""
-    print(
-        f"Installing {slug} CLI via npx ({PRINTING_PRESS_NPM} --cli-only) ...",
-        file=sys.stderr,
-        flush=True,
-    )
-    try:
-        proc = subprocess.run(
-            [npx, "-y", PRINTING_PRESS_NPM, "install", slug, "--cli-only"],
-            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
-        )
-    except Exception as exc:
-        logger.warning("npx install %s exception: %s", slug, exc)
-        return "install_failed", str(exc)
-    if proc.returncode != 0:
-        stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
-        logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
-        return "install_failed", stderr
-    return "", (proc.stderr or "")
-
-
-def _install_digg_cli() -> Tuple[bool, str, str, str]:
-    """Best-effort install of the digg-pp-cli binary.
-
-    Mirrors the yt-dlp/brew auto-install: it never raises, and degrades to a
-    recommend-only outcome when the installer is unavailable. Uses
-    ``@mvanhorn/printing-press-library`` (``--cli-only``) — the same catalog
-    installer as pp-digg; Hermes/OpenClaw skill wiring is irrelevant here.
-
-    Returns ``(engine_active, action, stderr, off_path_binary)`` where
-    ``engine_active`` is True only when ``shutil.which`` resolves the binary
-    (matching ``pipeline.available_sources()``). ``action`` is one of:
-      already_installed | installed | installed_off_path | install_failed | no_npx
-    ``stderr`` is populated on ``install_failed``. ``off_path_binary`` is set
-    when the binary exists on disk but is not PATH-visible to this process.
-    """
-    on_path = _digg_on_path()
-    if on_path:
-        return True, "already_installed", "", ""
+    if _digg_on_path():
+        return True, "already_installed", ""
     off_path = _digg_off_path_binary()
     if off_path:
-        return False, "installed_off_path", "", off_path
-    action, stderr = _run_npx_install("digg")
-    if action:
-        return False, action, stderr, ""
-    on_path = _digg_on_path()
-    if on_path:
-        return True, "installed", "", ""
-    off_path = _digg_off_path_binary()
-    if off_path:
-        combined = stderr.strip()
-        if combined:
-            logger.warning("digg-pp-cli installed off PATH: %s", combined)
-        return False, "installed_off_path", combined, off_path
-    stderr_msg = stderr or "install completed but digg-pp-cli was not found"
-    logger.warning("npx install digg failed verification: %s", stderr_msg)
-    return False, "install_failed", stderr_msg, ""
+        return False, "installed_off_path", off_path
+    return False, "not_installed", ""
 
 
-# Additional default-on Printing Press sources installed the same way as Digg:
-# (engine source key, slug for `install <slug>`, binary name). These activate in
-# ``pipeline.available_sources()`` when ``shutil.which`` resolves the binary.
-# Trustpilot is intentionally NOT here: it is opt-in (INCLUDE_SOURCES=trustpilot)
-# because of its headless-Chrome cookie harvest, so auto-installing its binary
-# for a source that stays off by default would be wasted work. Opting in installs
-# it on demand via `npx ... install trustpilot --cli-only` (see CONFIGURATION.md).
-PP_DEFAULT_SOURCES: list[tuple[str, str, str]] = [
-    ("arxiv", "arxiv", "arxiv-pp-cli"),
-    ("techmeme", "techmeme", "techmeme-pp-cli"),
-]
+# Additional Printing Press sources that setup reports on, beyond Digg:
+# (engine source key, build-script slug, binary name). Empty today: arXiv and
+# Techmeme are native stdlib clients (lib/arxiv.py, lib/techmeme.py) and need
+# no binary. Trustpilot is intentionally NOT here: it is opt-in
+# (INCLUDE_SOURCES=trustpilot); a user who opts in builds it with
+# `scripts/build-pp-cli.sh trustpilot` (see CONFIGURATION.md).
+PP_DEFAULT_SOURCES: list[tuple[str, str, str]] = []
 
 # Bright Data is deliberately absent from PP_DEFAULT_SOURCES: it is not a
 # Printing Press CLI, it is opt-in like Trustpilot, and it spends the user's
@@ -478,53 +434,34 @@ def _pp_off_path_binary(bin_name: str) -> Optional[str]:
     return None
 
 
-def _install_pp_cli(slug: str, bin_name: str) -> Tuple[bool, str, str, str]:
-    """Best-effort install of a Printing Press CLI binary.
+def _detect_pp_cli(bin_name: str) -> Tuple[bool, str, str]:
+    """Detect a Printing Press CLI binary. Never installs anything.
 
-    Slug-parameterized mirror of ``_install_digg_cli``: never raises, degrades
-    to recommend-only when the installer is unavailable. Returns
-    ``(engine_active, action, stderr, off_path_binary)`` with the same action
-    taxonomy: already_installed | installed | installed_off_path |
-    install_failed | no_npx.
+    Slug-parameterized mirror of ``_detect_digg_cli``. Returns
+    ``(engine_active, action, off_path_binary)`` with the same action
+    taxonomy: already_installed | installed_off_path | not_installed.
     """
-    on_path = shutil.which(bin_name)
-    if on_path:
-        return True, "already_installed", "", ""
+    if shutil.which(bin_name):
+        return True, "already_installed", ""
     off_path = _pp_off_path_binary(bin_name)
     if off_path:
-        return False, "installed_off_path", "", off_path
-    action, stderr = _run_npx_install(slug)
-    if action:
-        return False, action, stderr, ""
-    on_path = shutil.which(bin_name)
-    if on_path:
-        return True, "installed", "", ""
-    off_path = _pp_off_path_binary(bin_name)
-    if off_path:
-        combined = stderr.strip()
-        if combined:
-            logger.warning("%s installed off PATH: %s", bin_name, combined)
-        return False, "installed_off_path", combined, off_path
-    stderr_msg = stderr or f"install completed but {bin_name} was not found"
-    logger.warning("npx install %s failed verification: %s", slug, stderr_msg)
-    return False, "install_failed", stderr_msg, ""
+        return False, "installed_off_path", off_path
+    return False, "not_installed", ""
 
 
-def install_default_pp_sources() -> Dict[str, Dict[str, Any]]:
-    """Best-effort install of every additional default-on Printing Press source.
+def detect_default_pp_sources() -> Dict[str, Dict[str, Any]]:
+    """Report every entry in ``PP_DEFAULT_SOURCES`` without installing anything.
 
-    Returns ``{source_key: {installed, action, stderr?, path?}}`` so the wizard
-    can report per-CLI status alongside Digg without raising on any single
-    failure.
+    Returns ``{source_key: {installed, action, path?, build_cmd?}}``.
     """
     out: Dict[str, Dict[str, Any]] = {}
     for source_key, slug, bin_name in PP_DEFAULT_SOURCES:
-        installed, action, stderr, off_path = _install_pp_cli(slug, bin_name)
+        installed, action, off_path = _detect_pp_cli(bin_name)
         entry: Dict[str, Any] = {"installed": installed, "action": action}
-        if action == "install_failed" and stderr:
-            entry["stderr"] = stderr
         if off_path:
             entry["path"] = off_path
+        if action == "not_installed":
+            entry["build_cmd"] = pp_build_command(slug)
         out[source_key] = entry
     return out
 
@@ -806,6 +743,11 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
         lines.append("  - yt-dlp install failed \u2014 run `brew install yt-dlp` manually")
     elif ytdlp_action == "no_homebrew":
         lines.append("  - yt-dlp not found. Install Homebrew first, then: brew install yt-dlp")
+    elif ytdlp_action == "detect_only":
+        lines.append(
+            "  - yt-dlp not found. Setup did not install it (detect-only). "
+            "Install it yourself for YouTube search, e.g. `brew install yt-dlp` or `pip install yt-dlp`"
+        )
     elif ytdlp_action == "no_pip_windows":
         lines.append(
             "  - yt-dlp not found. Install with: pip install yt-dlp "
@@ -819,9 +761,7 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
         lines.append("  - yt-dlp not found (install with: brew install yt-dlp)")
 
     digg_action = results.get("digg_action", "")
-    if digg_action == "installed":
-        lines.append("  - Installed Digg CLI (free AI-news clusters source now active)")
-    elif digg_action == "already_installed":
+    if digg_action == "already_installed":
         lines.append("  - Digg CLI already installed (AI-news clusters active)")
     elif digg_action == "installed_off_path":
         digg_path = results.get("digg_path", "")
@@ -838,12 +778,10 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
                 "directory to PATH and restart your agent session/gateway for "
                 "Digg to activate"
             )
-    elif digg_action == "install_failed":
-        lines.append(f"  - Digg CLI install failed — run `{DIGG_INSTALL_CMD}` manually")
-    elif digg_action == "no_npx":
+    elif digg_action == "not_installed":
         lines.append(
-            "  - Digg CLI not installed (free, optional). Install Node/npx, then: "
-            f"{DIGG_INSTALL_CMD}"
+            "  - Digg CLI not installed (free, optional; needs Go). To enable it, "
+            f"build it yourself from the pinned source: {DIGG_INSTALL_CMD}"
         )
 
     pp_sources = results.get("pp_sources", {})
@@ -851,9 +789,7 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
     for source_key, entry in sorted(pp_sources.items()):
         name = pp_name.get(source_key, source_key.title())
         action = entry.get("action", "")
-        if action == "installed":
-            lines.append(f"  - Installed {name} CLI ({name} source now active)")
-        elif action == "already_installed":
+        if action == "already_installed":
             lines.append(f"  - {name} CLI already installed ({name} active)")
         elif action == "installed_off_path":
             path = entry.get("path", "")
@@ -869,15 +805,11 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
                     "directory to PATH and restart your agent session/gateway for "
                     f"{name} to activate"
                 )
-        elif action == "install_failed":
+        elif action == "not_installed":
+            build_cmd = entry.get("build_cmd") or pp_build_command(source_key)
             lines.append(
-                f"  - {name} CLI install failed — run "
-                f"`npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only` manually"
-            )
-        elif action == "no_npx":
-            lines.append(
-                f"  - {name} CLI not installed (free, optional). Install Node/npx, "
-                f"then: `npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only`"
+                f"  - {name} CLI not installed (free, optional; needs Go). To "
+                f"enable it, build it yourself from the pinned source: {build_cmd}"
             )
 
     # Bright Data / Amazon. Reported but never installed (it spends the user's
@@ -944,7 +876,7 @@ _OPENCLAW_KEY_NAMES = [
 def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     """Server-side setup probe: no cookies, tool + key availability, Digg CLI.
 
-    Best-effort installs digg-pp-cli when npx is available (same as desktop
+    Detects digg-pp-cli (never installs it; same as desktop
     ``run_auto_setup``). Returns a dict suitable for JSON output to stdout so
     that SKILL.md can present appropriate options to the user.
     """
@@ -952,7 +884,7 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     node = shutil.which("node") is not None
     python3 = shutil.which("python3") is not None
 
-    digg_installed, digg_action, digg_stderr, digg_path = _install_digg_cli()
+    digg_installed, digg_action, digg_path = _detect_digg_cli()
 
     keys: Dict[str, bool] = {}
     for key_name in _OPENCLAW_KEY_NAMES:
@@ -979,8 +911,8 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     }
     if digg_path:
         payload["digg_path"] = digg_path
-    if digg_action == "install_failed" and digg_stderr:
-        payload["digg_stderr"] = digg_stderr
+    if digg_action == "not_installed":
+        payload["digg_build_cmd"] = DIGG_INSTALL_CMD
     return payload
 
 
@@ -1246,8 +1178,9 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
 def _device_handle_path() -> Path:
     """Where run_github_start persists the device_code/interval for run_github_poll.
 
-    Kept next to the .env in the config dir; falls back to the OS temp dir when
-    no config dir is resolvable (clean/no-config mode).
+    Kept next to the .env in the config dir; in clean/no-config mode it falls
+    back to a private per-user directory (0700, owner-checked) under the OS
+    temp dir -- never a fixed, shared-``/tmp`` file name.
     """
     try:
         from . import env as _env
@@ -1256,9 +1189,28 @@ def _device_handle_path() -> Path:
             return _env.CONFIG_FILE.parent / ".github-device-handle.json"
     except Exception:
         pass
+    return private_tmp_dir() / "github-device-handle.json"
+
+
+def private_tmp_dir() -> Path:
+    """A per-user 0700 directory under the OS temp dir. Raises OSError when
+    the path is a symlink, not a directory, or owned by someone else."""
+    import stat
     import tempfile
 
-    return Path(tempfile.gettempdir()) / "last30days-github-device-handle.json"
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    path = Path(tempfile.gettempdir()) / f"last30days-{uid}"
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"{path} is not a private directory")
+    if hasattr(os, "getuid") and st.st_uid != uid:
+        raise OSError(f"{path} is owned by another user")
+    os.chmod(path, 0o700)
+    return path
 
 
 def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
@@ -1381,8 +1333,8 @@ def run_github_start() -> Dict[str, Any]:
         # Persist the poll handle (0o600) so a separate --github-poll process can
         # resume it. Best-effort: the in-memory one-shot path does not depend on
         # this write succeeding.
-        path = _device_handle_path()
         try:
+            path = _device_handle_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             write_private_text(path, json.dumps(handle), encoding="utf-8")
             if os.name != "posix":

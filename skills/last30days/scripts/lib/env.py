@@ -728,6 +728,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('BROWSER_CDP_URL', None),
         ('LAST30DAYS_TRUST_PROJECT_CONFIG', None),
         ('SETUP_COMPLETE', None),
+        # Detect-only setup: never run `brew install yt-dlp` (setup_wizard).
+        ('LAST30DAYS_SETUP_NO_INSTALL', None),
         ('INCLUDE_SOURCES', ''),
         ('EXCLUDE_SOURCES', ''),
         ('LAST30DAYS_DEFAULT_SEARCH', ''),
@@ -1085,6 +1087,14 @@ COOKIE_DOMAINS: dict[str, dict[str, Any]] = {
 COOKIE_BROWSER_NAMES = (
     "firefox", "safari", "chrome", "brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium"
 )
+
+
+def cookie_access_granted(config: dict[str, Any]) -> bool:
+    """True only for an explicit, truthy ``BROWSER_CONSENT`` (and no refusal)."""
+    if cookie_access_denied(config):
+        return False
+    consent = config.get("BROWSER_CONSENT")
+    return consent is not None and str(consent).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def cookie_access_denied(config: dict[str, Any]) -> bool:

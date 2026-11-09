@@ -55,7 +55,8 @@ def test_html_publish_reference_prompts_for_password_choice():
     assert "ask a second question" in publish_section
     assert "**Public link** - publish without a password" in publish_section
     assert "**Password-protected link** - ask the user to type the shared password" in publish_section
-    assert "repeat the shared password they selected" in publish_section
+    assert "Do not repeat the password in chat" in publish_section
+    assert "repeat the shared password they selected" not in publish_section
     assert "LAST30DAYS_PUBLISH_PASSWORD" in publish_section
     assert '--output "$HTML_PATH"' in publish_section
     assert "<HTML_PATH>.publish.json" in publish_section
